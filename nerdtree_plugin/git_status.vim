@@ -68,17 +68,22 @@ func! s:GetParentPath(path)
     endif
 endfunc
 
+function! s:NERDTreeGetPathStr(path)
+    let l:pathStr = a:path.str()
+    let l:cwd = b:NERDTree.root.path.str() . a:path.Slash()
+    if nerdtree#runningWindows()
+        let l:pathStr = a:path.WinToUnixPath(l:pathStr)
+        let l:cwd = a:path.WinToUnixPath(l:cwd)
+    endif
+    let l:pathStr = substitute(l:pathStr, fnameescape(l:cwd), '', '')
+    return l:pathStr
+endfunc
+
 "if the ancestors path is Untracked
 "all it's desendents is Untracked
 function! s:NERDTreeGitStatusIsAncestorUntracked(event)
     let l:path = a:event.subject
-    let l:pathStr = l:path.str()
-    let l:cwd = b:NERDTree.root.path.str() . l:path.Slash()
-    if nerdtree#runningWindows()
-        let l:pathStr = l:path.WinToUnixPath(l:pathStr)
-        let l:cwd = l:path.WinToUnixPath(l:cwd)
-    endif
-    let l:pathStr = substitute(l:pathStr, fnameescape(l:cwd), '', '')
+    let l:pathStr = s:NERDTreeGetPathStr(l:path)
     let l:parentPath = s:GetParentPath(l:pathStr)
     while l:parentPath !=''
         "echomsg fnameescape(l:parentPath)
@@ -117,10 +122,23 @@ function! NERDTreeGitStatusRefreshListener(event)
         return
     else
         if l:statusKey == ''
-            if(s:NERDTreeGitStatusIsAncestorUntracked(a:event)==0)
-                call l:path.flagSet.addFlag('git', g:NERDTreeGitUnchangedIndicator)
+            if(s:NERDTreeGitStatusIsAncestorUntracked(a:event)==1)
                 return
             endif
+            "show no flag when dir has no statusKey and dir is empty
+            if (l:path.isDirectory)
+                let l:full_path= trim(b:NERDTree.root.path.JoinPathStrings(l:path.str()),'/\')
+                let l:is_empty_dir=1
+                for l:entry in readdir(l:full_path)
+                    let l:is_empty_dir=0
+                    break
+                endfor
+                if(l:is_empty_dir)
+                    return
+                endif
+            endif
+            call l:path.flagSet.addFlag('git', g:NERDTreeGitUnchangedIndicator)
+            return
         endif
         let l:flag = s:NERDTreeGetIndicator(l:statusKey)
         call l:path.flagSet.addFlag('git', l:flag)
@@ -194,13 +212,7 @@ function! g:NERDTreeGetGitStatus(path)
         let s:GitStatusCacheTime = localtime()
         call g:NERDTreeGitStatusRefresh()
     endif
-    let l:pathStr = a:path.str()
-    let l:cwd = b:NERDTree.root.path.str() . a:path.Slash()
-    if nerdtree#runningWindows()
-        let l:pathStr = a:path.WinToUnixPath(l:pathStr)
-        let l:cwd = a:path.WinToUnixPath(l:cwd)
-    endif
-    let l:pathStr = substitute(l:pathStr, fnameescape(l:cwd), '', '')
+    let l:pathStr = s:NERDTreeGetPathStr(a:path)
     "echomsg fnameescape(l:pathStr)
     if a:path.isDirectory
         let l:statusKey = get(b:NERDTreeCachedGitFileStatus, fnameescape(l:pathStr . '/'), '')
