@@ -82,6 +82,9 @@ endfunc
 "if the ancestors path is Untracked
 "all it's desendents is Untracked
 function! s:NERDTreeGitStatusIsAncestorUntracked(event)
+    if get(b:NERDTreeCachedGitFileStatus,'./', '')=='Untracked'
+        return 1
+    endif
     let l:path = a:event.subject
     let l:pathStr = s:NERDTreeGetPathStr(l:path)
     let l:parentPath = s:GetParentPath(l:pathStr)
