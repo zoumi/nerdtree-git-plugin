@@ -53,14 +53,25 @@ if !exists('s:NERDTreeIndicatorMap')
                 \ 'Renamed'   : "\u279c",
                 \ 'Unmerged'  : "\u268e",
                 \ 'Deleted'   : "\u2718",
-                \ 'Clean'     : "\u2634",
                 \ 'Ignored'   : "\u2610",
                 \ 'Unknown'   : "\u2753"
                 \ }
 endif
 
-func! s:GetParentPath(path)
-    let l:re= matchlist(a:path,'\(^.*\)[/\\]\+')
+function! s:FindGitRoot(path)
+    let l:path = a:path
+    while !empty(l:path) &&
+        \ l:path._str() !~# '^\(\a:\\\|\/\)$'
+        if isdirectory(l:path._str() . '/.git')
+            return l:path
+        endif
+        let l:path = l:path.getParent()
+    endwhile
+    return
+endfunction
+
+func! s:GetParentPath(pathStr)
+    let l:re= matchlist(a:pathStr,'\(^.*\)[/\\]\+')
     if len(l:re)>1
         return l:re[1]
     else
@@ -79,17 +90,28 @@ function! s:NERDTreeGetPathStr(path)
     return l:pathStr
 endfunc
 
+function! s:NERDTreeGetPathStrRelativeToGitRoot(path)
+    let l:pathStr = a:path.str()
+    if nerdtree#runningWindows()
+        let l:pathStr = a:path.WinToUnixPath(l:pathStr)
+    endif
+    let l:pathStr = substitute(l:pathStr, fnameescape(b:git_root_path_str), '', '')
+    return l:pathStr
+endfunc
+
 "if the ancestors path is Untracked
 "all it's desendents is Untracked
-function! s:NERDTreeGitStatusIsAncestorUntracked(event)
+function! s:NERDTreeGitStatusIsAncestorUntracked(path)
     if get(b:NERDTreeCachedGitFileStatus,'./', '')=='Untracked'
         return 1
     endif
-    let l:path = a:event.subject
-    let l:pathStr = s:NERDTreeGetPathStr(l:path)
+    let l:pathStr = s:NERDTreeGetPathStrRelativeToGitRoot(a:path)
+    "if pathStr is not the subdir of git root
+    if (len(l:pathStr)>0) && (l:pathStr[0]=='/')
+        return 1
+    endif
     let l:parentPath = s:GetParentPath(l:pathStr)
     while l:parentPath !=''
-        "echomsg fnameescape(l:parentPath)
         let l:statusKey = get(b:NERDTreeCachedGitFileStatus, fnameescape(l:parentPath . '/'), '')
         if(l:statusKey=="Untracked")
             return 1
@@ -112,20 +134,41 @@ function! s:NERDTreeCheckAncestorGitStatus(pathStr,statusKey)
     endif
 endfunction
 
-
-function! NERDTreeGitStatusRefreshListener(event)
-    if !exists('b:NOT_A_GIT_REPOSITORY')
+function! s:NERDTreeRefreshGitRoot(path)
+    let l:cur_git_root_path = s:FindGitRoot(a:path)
+    if empty(l:cur_git_root_path)
+        let b:git_root_path_str=''
+        return
+    endif
+    let l:cur_git_root_path_str=s:NERDTreeGetPathStr(l:cur_git_root_path) . '/'
+    if (!exists('b:git_root_path_str')) ||
+                \ (b:git_root_path_str!=l:cur_git_root_path_str)
+        let b:git_root_path_str=l:cur_git_root_path_str
+        let b:git_root_path = l:cur_git_root_path
         call g:NERDTreeGitStatusRefresh()
     endif
+endfunction
+
+function! NERDTreeGitStatusRefreshListener(event)
     let l:path = a:event.subject
-    "echomsg l:path
+    let l:cur_tree_root_str = b:NERDTree.root.path.str()
+    if (!exists('b:tree_root_str')) ||
+                \ (b:tree_root_str!=l:cur_tree_root_str)
+        let b:tree_root_str=l:cur_tree_root_str
+        call s:NERDTreeRefreshGitRoot(l:path)
+    endif
+
+    if b:git_root_path_str==''
+        return
+    endif
+
     let l:statusKey= g:NERDTreeGetGitStatus(l:path)
     call l:path.flagSet.clearFlags('git')
     if l:statusKey == 'Untracked'
         return
     else
         if l:statusKey == ''
-            if(s:NERDTreeGitStatusIsAncestorUntracked(a:event)==1)
+            if(s:NERDTreeGitStatusIsAncestorUntracked(l:path)==1)
                 return
             endif
             "show no flag when dir has no statusKey and dir is empty
@@ -148,17 +191,19 @@ function! NERDTreeGitStatusRefreshListener(event)
     endif
 endfunction
 
+"For Windows user if your git return Unicode file name as \xxx\xxx\xxx...
+"Consider turn off the setting:
+"git config --global core.quotepath off
+"https://github.com/msysgit/msysgit/wiki/Git-for-Windows-Unicode-Support
 " FUNCTION: g:NERDTreeGitStatusRefresh() {{{2
 " refresh cached git status
 function! g:NERDTreeGitStatusRefresh()
     let b:NERDTreeCachedGitFileStatus = {}
-    let b:NOT_A_GIT_REPOSITORY        = 1
-
-    let l:root = b:NERDTree.root.path.str()
-    let l:gitcmd = 'git -c color.status=false status -s'
+    let l:gitcmd = 'cd ' . shellescape(b:git_root_path_str) . ' && git -c color.status=false status -s'
     if g:NERDTreeShowIgnoredStatus
         let l:gitcmd = l:gitcmd . ' --ignored'
     endif
+
     if exists('g:NERDTreeGitStatusIgnoreSubmodules')
         let l:gitcmd = l:gitcmd . ' --ignore-submodules'
         if g:NERDTreeGitStatusIgnoreSubmodules ==# 'all' || 
@@ -166,29 +211,26 @@ function! g:NERDTreeGitStatusRefresh()
             let l:gitcmd = l:gitcmd . '=' . g:NERDTreeGitStatusIgnoreSubmodules
         endif
     endif
-    let l:statusesStr = system(l:gitcmd . ' ' . l:root)
+    let l:statusesStr = system(l:gitcmd)
     let l:statusesSplit = split(l:statusesStr, '\n')
-    if l:statusesSplit != [] && l:statusesSplit[0] =~# 'fatal:.*'
-        let l:statusesSplit = []
-        return
-    endif
-    let b:NOT_A_GIT_REPOSITORY = 0
+    "if l:statusesSplit != [] && l:statusesSplit[0] =~# 'fatal:.*'
+        "let l:statusesSplit = []
+        "return
+    "endif
 
     for l:statusLine in l:statusesSplit
         " cache git status of files
         let l:pathStr = substitute(l:statusLine, '...', '', '')
         let l:pathSplit = split(l:pathStr, ' -> ')
         if len(l:pathSplit) == 2
-            "echomsg "pathSplit get 2:"
-            "echon  l:pathSplit
             let l:pathStr = l:pathSplit[1]
         else
             let l:pathStr = l:pathSplit[0]
         endif
         let l:pathStr = s:NERDTreeTrimDoubleQuotes(l:pathStr)
-        if l:pathStr =~# '\.\./.*'
-            continue
-        endif
+        "if l:pathStr =~# '\.\./.*'
+            "continue
+        "endif
         let l:statusKey = s:NERDTreeGetFileGitStatusKey(l:statusLine[0], l:statusLine[1])
         let b:NERDTreeCachedGitFileStatus[fnameescape(l:pathStr)] = l:statusKey
         if !isdirectory(l:pathStr)
@@ -210,13 +252,11 @@ endfunction
 let s:GitStatusCacheTimeExpiry = 2
 let s:GitStatusCacheTime = 0
 function! g:NERDTreeGetGitStatus(path)
-    "echomsg a:path
     if localtime() - s:GitStatusCacheTime > s:GitStatusCacheTimeExpiry
         let s:GitStatusCacheTime = localtime()
         call g:NERDTreeGitStatusRefresh()
     endif
-    let l:pathStr = s:NERDTreeGetPathStr(a:path)
-    "echomsg fnameescape(l:pathStr)
+    let l:pathStr = s:NERDTreeGetPathStrRelativeToGitRoot(a:path)
     if a:path.isDirectory
         let l:statusKey = get(b:NERDTreeCachedGitFileStatus, fnameescape(l:pathStr . '/'), '')
     else
@@ -369,7 +409,6 @@ function! s:AddHighlighting()
                 \ 'NERDTreeGitStatusAdded'      : s:NERDTreeGetIndicator('Added'),
                 \ 'NERDTreeGitStatusRenamed'     : s:NERDTreeGetIndicator('Renamed'),
                 \ 'NERDTreeGitStatusIgnored'     : s:NERDTreeGetIndicator('Ignored'),
-                \ 'NERDTreeGitStatusDirClean'    : s:NERDTreeGetIndicator('Clean')
                 \ }
 
     for l:name in keys(l:synmap)
@@ -381,7 +420,6 @@ function! s:AddHighlighting()
     hi def link NERDTreeGitStatusRenamed Title
     hi def link NERDTreeGitStatusUnmerged Label
     "hi def link NERDTreeGitStatusUntracked Comment
-    hi def link NERDTreeGitStatusDirClean DiffAdd
     " TODO: use diff color
     hi def link NERDTreeGitStatusIgnored DiffAdd
 endfunction
