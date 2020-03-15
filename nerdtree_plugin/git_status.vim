@@ -175,7 +175,8 @@ function! NERDTreeGitStatusRefreshListener(event)
             if (l:path.isDirectory)
                 let l:full_path= trim(b:NERDTree.root.path.JoinPathStrings(l:path.str()),'/\')
                 let l:is_empty_dir=1
-                for l:entry in readdir(l:full_path)
+                "for l:entry in readdir(l:full_path)
+                for l:entry in glob(l:full_path . "/*",0,1)
                     let l:is_empty_dir=0
                     break
                 endfor
